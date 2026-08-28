@@ -145,6 +145,58 @@ function apiKeyEnvOf(
   return typeof ref === 'string' && ref.length > 0 ? ref : undefined
 }
 
+/**
+ * The llm-deepseek family's conventional credential reference when its profile
+ * names none, mirroring the adapter's per-dialect default: `OPENAI_API_KEY` on
+ * the OpenAI dialect, `DEEPSEEK_API_KEY` otherwise. Other namespaces get no
+ * fallback — a profile without a named reference there means provider-native
+ * authentication.
+ * @param namespace - the owning settings namespace.
+ * @param path - the provider's settings path.
+ * @param schema - settings schema operations used to read the resolved profile.
+ * @param dialectOverride - an unsaved dialect from the editor draft, honored
+ * before the resolved profile's `dialect`.
+ * @returns the conventional reference, or undefined outside the deepseek family.
+ */
+function deepseekFamilyKeyRef(
+  namespace: SettingsNamespaceView | undefined,
+  path: readonly string[],
+  schema: SettingsSchemaOperations,
+  dialectOverride?: string,
+): string | undefined {
+  if (namespace?.ns !== 'llm-deepseek') return undefined
+  const profile = schema.getPath(namespace.value, path)
+  const dialect = dialectOverride
+    ?? (typeof profile === 'object' && profile !== null
+      ? (profile as { dialect?: unknown }).dialect
+      : undefined)
+  return dialect === 'openai' ? 'OPENAI_API_KEY' : 'DEEPSEEK_API_KEY'
+}
+
+/**
+ * The credential reference a resolved profile stores keys under: its named
+ * `apiKeyEnv`, else the llm-deepseek family's per-dialect conventional
+ * reference, else the route-derived reference ({@link deriveKeyRef}).
+ * @param namespace - the owning settings namespace.
+ * @param path - the provider's settings path.
+ * @param schema - settings schema operations used to read the resolved profile.
+ * @param provider - provider route id, for the route-derived fallback.
+ * @param dialectOverride - an unsaved dialect from the editor draft, honored
+ * before the resolved profile's `dialect`.
+ * @returns the reference the page should write the key to.
+ */
+export function credentialRefOf(
+  namespace: SettingsNamespaceView | undefined,
+  path: readonly string[],
+  schema: SettingsSchemaOperations,
+  provider: string,
+  dialectOverride?: string,
+): string {
+  return apiKeyEnvOf(namespace, path, schema)
+    ?? deepseekFamilyKeyRef(namespace, path, schema, dialectOverride)
+    ?? deriveKeyRef(provider)
+}
+
 /** The models settings page controller (one per settings surface). */
 export class ModelsSettingsStore {
   /** The snapshot the section renders from (uSES-safe store). */
@@ -206,7 +258,8 @@ export class ModelsSettingsStore {
         entry,
         configured,
         removable,
-        apiKeyEnv: apiKeyEnvOf(namespace, entry.settingsPath, this.schema),
+        apiKeyEnv: apiKeyEnvOf(namespace, entry.settingsPath, this.schema)
+          ?? deepseekFamilyKeyRef(namespace, entry.settingsPath, this.schema),
         credential: undefined,
       }
     })

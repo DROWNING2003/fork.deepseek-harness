@@ -972,14 +972,30 @@ Requires: `llm`
  * yml: a missing API key resolves through {@link Config.apiKeyEnv} at each
  * request (a request without any key fails with `MISSING_CREDENTIAL`, not at
  * plugin load), omitted thinking mode uses the provider default, and omitted
- * reasoning effort resolves to `high`.
+ * reasoning effort resolves to `high` on the DeepSeek dialect.
  */
 export interface Config {
-  /** Credential reference (environment-variable name) resolved per request; defaults to `DEEPSEEK_API_KEY`. */
+  /**
+   * Wire dialect: `deepseek` (default) speaks the DeepSeek chat-completions
+   * extensions (`thinking`, `reasoning_content` passback, effort `max`), while
+   * `openai` speaks plain OpenAI chat completions (GPT models or any
+   * OpenAI-compatible gateway): no `thinking` field, no reasoning passback,
+   * effort limited to `off`/`high`. The dialect also picks the defaults for
+   * {@link Config.apiKeyEnv}, {@link Config.baseURL}, and {@link Config.models}.
+   */
+  dialect?: 'deepseek' | 'openai'
+  /**
+   * Credential reference (environment-variable name) resolved per request;
+   * defaults to `DEEPSEEK_API_KEY`, or `OPENAI_API_KEY` on the OpenAI dialect.
+   */
   apiKeyEnv?: string
-  /** Endpoint base; falls back to $DEEPSEEK_BASE_URL from a trusted environment layer, then the public API. */
+  /**
+   * Endpoint base; falls back to `$DEEPSEEK_BASE_URL` (or `$OPENAI_BASE_URL`
+   * on the OpenAI dialect) from a trusted environment layer, then the provider
+   * public API.
+   */
   baseURL?: string
-  /** Deployment thinking policy; `disabled` limits every conversation request to `off`. */
+  /** Deployment thinking policy; `disabled` limits every conversation request to `off`. DeepSeek dialect only. */
   thinking?: 'enabled' | 'disabled'
   /** Default thinking effort (default `high`); `off` disables thinking per request. */
   reasoningEffort?: 'off' | 'low' | 'high' | 'max'
@@ -1799,6 +1815,8 @@ Requires: `agents`
 export interface JsonRpcConfig {
   /** Report max-token turn/subagent termination as a successful SDK result. */
   maxTokensAsSuccess?: boolean
+  /** Configuration for the server-owned DeepSeek route when no visible adapter owns it. */
+  fallbackLlm?: LlmDeepSeek.Config
   /** Transport input override; production uses `process.stdin`. */
   input?: Readable
   /** Transport output override; production uses `process.stdout`. */
@@ -1808,9 +1826,9 @@ export interface JsonRpcConfig {
 }
 ```
 
-Depends on: `Readable` (`node:stream`) · `Writable` (`node:stream`)
+Depends on: [`LlmDeepSeek`](../packages/llm/llm-deepseek/src/index.ts) · `Readable` (`node:stream`) · `Writable` (`node:stream`)
 
-Source: [`packages/sdk/server/src/index.ts:25`](../packages/sdk/server/src/index.ts)
+Source: [`packages/sdk/server/src/index.ts:26`](../packages/sdk/server/src/index.ts)
 
 <a id="deepseek-aidsh-session-log-deepseek"></a>
 

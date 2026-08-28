@@ -149,7 +149,7 @@ export interface WireToolCallDelta {
   id?: string
   type?: 'function'
   function?: {
-    /** Present on the first delta of each call only. */
+    /** Present on the first delta; some OpenAI-compatible gateways repeat an empty string on argument deltas. */
     name?: string
     /** Argument JSON fragment (concatenate across deltas). */
     arguments?: string

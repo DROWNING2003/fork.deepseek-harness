@@ -57,12 +57,13 @@ describe('Python SDK dsh profile keyless smoke', () => {
       request.setEncoding('utf8')
       request.on('data', (chunk: string) => { body += chunk })
       request.on('end', () => {
-        modelRequests.push(JSON.parse(body) as Record<string, unknown>)
+        const modelRequest = JSON.parse(body) as Record<string, unknown>
+        modelRequests.push(modelRequest)
         response.writeHead(200, { 'content-type': 'text/event-stream' })
         response.write('data: {"choices":[{"delta":{"role":"assistant","content":null}}]}\n\n')
         response.write('data: {"choices":[{"delta":{"content":"done"}}]}\n\n')
         response.write('data: {"choices":[{"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":3,"completion_tokens":1}}\n\n')
-        response.end('data: [DONE]\n\n')
+        response.end(modelRequest.model === 'gpt-4.1' ? undefined : 'data: [DONE]\n\n')
       })
     })
     await new Promise<void>(resolve => modelServer.listen(0, '127.0.0.1', resolve))

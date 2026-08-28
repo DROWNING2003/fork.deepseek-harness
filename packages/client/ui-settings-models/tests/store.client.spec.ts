@@ -139,6 +139,45 @@ describe('ModelsSettingsStore', () => {
     expect(state.namespaces.get('llm-pi-ai')?.ns).toBe('llm-pi-ai')
   })
 
+  it('derives the llm-deepseek family credential reference from the dialect when the profile names none', async () => {
+    const openaiNamespace = {
+      ns: 'llm-deepseek',
+      schema: {},
+      value: { dialect: 'openai' },
+      applies: 'live' as const,
+      secrets: [],
+      revision: 0,
+    }
+    const { ctx, mirror, seenRefs } = api({
+      // The custom namespace shape differs from the shared NAMESPACES fixture.
+      describeSettings: () => Promise.resolve(remoteOk({ writable: true, hasDocument: false, namespaces: [openaiNamespace] as never })),
+    })
+    const store = new ModelsSettingsStore(ctx, settingsSchema, mirror)
+    await store.load()
+    const state = store.store.getSnapshot()
+    expect(state.rows[0]).toMatchObject({ apiKeyEnv: 'OPENAI_API_KEY' })
+    expect(seenRefs).toEqual([['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GHOST_API_KEY']])
+  })
+
+  it('falls back to DEEPSEEK_API_KEY when the deepseek profile is not an object', async () => {
+    const brokenNamespace = {
+      ns: 'llm-deepseek',
+      schema: {},
+      value: null,
+      applies: 'live' as const,
+      secrets: [],
+      revision: 0,
+    }
+    const { ctx, mirror, seenRefs } = api({
+      describeSettings: () => Promise.resolve(remoteOk({ writable: true, hasDocument: false, namespaces: [brokenNamespace] as never })),
+    })
+    const store = new ModelsSettingsStore(ctx, settingsSchema, mirror)
+    await store.load()
+    const state = store.store.getSnapshot()
+    expect(state.rows[0]).toMatchObject({ apiKeyEnv: 'DEEPSEEK_API_KEY' })
+    expect(seenRefs).toEqual([['DEEPSEEK_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GHOST_API_KEY']])
+  })
+
   it('degrades the credential badge, not the page, when the credential domain fails', async () => {
     const { ctx, mirror } = api({ describeCredentials: () => Promise.resolve(remoteFail('no provider')) })
     const store = new ModelsSettingsStore(ctx, settingsSchema, mirror)

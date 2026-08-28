@@ -12,6 +12,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Readable, Writable } from 'node:stream'
 import Schema from '@deepseek-ai/schemastery'
+import * as LlmDeepSeek from '@deepseek-ai/dsh-llm-deepseek'
 import { JsonRpcLineTransport } from '@deepseek-ai/dsh-sdk-protocol'
 import { HarnessSdkJsonRpcServer } from './server.ts'
 
@@ -25,6 +26,8 @@ export const inject = ['agents']
 export interface JsonRpcConfig {
   /** Report max-token turn/subagent termination as a successful SDK result. */
   maxTokensAsSuccess?: boolean
+  /** Configuration for the server-owned DeepSeek route when no visible adapter owns it. */
+  fallbackLlm?: LlmDeepSeek.Config
   /** Transport input override; production uses `process.stdin`. */
   input?: Readable
   /** Transport output override; production uses `process.stdout`. */
@@ -35,6 +38,7 @@ export interface JsonRpcConfig {
 
 export const Config: Schema<JsonRpcConfig> = Schema.object({
   maxTokensAsSuccess: Schema.boolean().default(false),
+  fallbackLlm: LlmDeepSeek.Config,
 })
 
 /**
@@ -59,6 +63,7 @@ export function apply(ctx: Context, config: JsonRpcConfig): void {
   const transport = new JsonRpcLineTransport(input, output)
   const server = new HarnessSdkJsonRpcServer(ctx, transport, {
     maxTokensAsSuccess: resolvedConfig.maxTokensAsSuccess,
+    ...(resolvedConfig.fallbackLlm === undefined ? {} : { fallbackLlm: resolvedConfig.fallbackLlm }),
   })
 
   // Share one exit task so racing shutdown requests cannot dispose the root or

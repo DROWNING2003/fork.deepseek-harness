@@ -369,8 +369,9 @@ describe('ModelsSection', () => {
   it('renders the unkeyed whole-section provider as an open setup card in the first-run posture', async () => {
     await mountFirstRun()
     // Nothing is reachable yet, and DeepSeek has no configured credential and
-    // no stored apiKey → setup card.
-    expect(screen.getByText('DeepSeek')).toBeTruthy()
+    // no stored apiKey → setup card. The card's collapsed fold also carries
+    // the dialect selector, whose "DeepSeek" option matches the title text.
+    expect(screen.getAllByText('DeepSeek').length).toBeGreaterThan(0)
     expect(screen.getByLabelText(en.keyInput)).toBeTruthy()
     expect(screen.getByText('openai')).toBeTruthy()
     expect(screen.queryByText('Active')).toBeNull()

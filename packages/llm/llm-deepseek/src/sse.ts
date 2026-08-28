@@ -4,7 +4,8 @@
  * multi-`data:` joining — is `eventsource-parser`'s. Comments are reported
  * only through an optional transport-activity callback. This module keeps the
  * DeepSeek protocol: the literal `[DONE]` is yielded so the caller owns final
- * flushing, and EOF before it raises {@link LlmError}. Framing is spec-strict:
+ * flushing, and EOF before it raises {@link LlmError}. OpenAI-compatible callers
+ * may opt into terminal EOF handling; the translator then requires a finish reason. Framing is spec-strict:
  * an event dispatches only on its blank-line terminator, so an unterminated
  * tail at EOF is truncation, not a flushable payload.
  *
@@ -17,17 +18,25 @@ import { LlmError } from '@deepseek-ai/dsh-llm'
 /** The terminal payload DeepSeek (and OpenAI) send after the last chunk. */
 export const DONE = '[DONE]'
 
+/** Optional compatibility behavior for SSE termination. */
+export interface ParseSseOptions {
+  /** Return on EOF so the translator can accept an already-finished OpenAI-compatible response. */
+  allowTerminalEof?: boolean
+}
+
 /**
  * Parse an SSE byte stream into data payloads. Yields `[DONE]` as the final
  * value and returns; throws `LlmError('STREAM_CLOSED')` when the stream ends
  * without it (truncated response — the model call cannot be trusted).
  * @param stream - raw SSE bytes; reads may split anywhere, including mid-UTF-8 sequence.
  * @param onComment - optional transport-activity callback; comments never enter the yielded payload stream.
- * @returns each event's data payload in arrival order, the `[DONE]` sentinel last.
+ * @param options - terminal EOF compatibility; strict `[DONE]` termination is the default.
+ * @returns each event's data payload in arrival order, with the `[DONE]` sentinel last when present.
  */
 export async function* parseSse(
   stream: ReadableStream<BufferSource>,
   onComment?: (comment: string) => void,
+  options: ParseSseOptions = {},
 ): AsyncGenerator<string> {
   const events = stream
     .pipeThrough(new TextDecoderStream())
@@ -36,5 +45,6 @@ export async function* parseSse(
     yield data
     if (data === DONE) return
   }
+  if (options.allowTerminalEof === true) return
   throw new LlmError('SSE stream ended without [DONE]', 'STREAM_CLOSED')
 }

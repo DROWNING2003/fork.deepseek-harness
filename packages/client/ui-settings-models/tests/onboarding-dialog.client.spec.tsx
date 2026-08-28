@@ -240,7 +240,10 @@ describe('DeepSeekOnboardingDialog', () => {
       harness({ providersFailure: 'the provider directory is unavailable' }),
       harness({ providerActive: false }),
       harness({ settingsNamespace: false }),
-      harness({ apiKeyEnv: null }),
+      // A profile storing no ref still resolves the conventional
+      // DEEPSEEK_API_KEY (the adapter always needs a key), so "no stored ref"
+      // is a blocking missing key, not an unavailable setup — it belongs to
+      // the dialog's ordinary path, not this list.
     ]) {
       const view = render(<DeepSeekOnboardingDialog {...h.props} />)
       await act(async () => { await h.controller.load() })

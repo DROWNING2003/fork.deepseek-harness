@@ -11,8 +11,9 @@
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { EMPTY_RESPONSE_CODE, LlmError } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, FinishReason, StreamChunk, TokenUsage, ToolCallId } from '@deepseek-ai/dsh-llm'
+import { httpErrorCode } from './errors.ts'
 import { DONE } from './sse.ts'
-import type { WireChunk, WireUsage } from './types.ts'
+import type { WireChunk, WireError, WireUsage } from './types.ts'
 
 /** One open block under assembly. */
 interface OpenBlock {
@@ -85,15 +86,25 @@ function closeBlock(block: OpenBlock): ContentBlock {
   }
 }
 
+/** Compatibility behavior for OpenAI-like payload termination. */
+export interface TranslateOptions {
+  /** Accept EOF only after a wire `finish_reason` has established the terminal outcome. */
+  allowTerminalEof?: boolean
+}
+
 /**
- * Consume SSE data payloads (ending with `[DONE]`) and yield StreamChunks.
+ * Consume SSE data payloads (normally ending with `[DONE]`) and yield StreamChunks.
  * Malformed JSON payloads abort the stream with `MALFORMED_RESPONSE`.
- * @param payloads - SSE data payloads from {@link parseSse}, `[DONE]`-terminated.
- * @returns deltas as they arrive; `block-end`s, `usage`, and `finish` are all deferred to the `[DONE]` sentinel.
+ * @param payloads - SSE data payloads from {@link parseSse}.
+ * @param options - terminal EOF compatibility; strict `[DONE]` termination is the default.
+ * @returns deltas as they arrive; `block-end`s, `usage`, and `finish` are deferred to the terminal marker.
  *   A `stop` (or absent) finish with no opened blocks is a degenerate provider completion and maps to an
  *   `EMPTY_RESPONSE` error finish instead of a successful empty message.
  */
-export async function* translate(payloads: AsyncIterable<string>): AsyncGenerator<StreamChunk> {
+export async function* translate(
+  payloads: AsyncIterable<string>,
+  options: TranslateOptions = {},
+): AsyncGenerator<StreamChunk> {
   let nextIndex = 0
   let textBlock: OpenBlock | undefined
   let reasoningBlock: OpenBlock | undefined
@@ -108,30 +119,46 @@ export async function* translate(payloads: AsyncIterable<string>): AsyncGenerato
     return block
   }
 
+  function* finish(): Generator<StreamChunk> {
+    for (const block of order) {
+      yield { type: 'block-end', index: block.index, block: closeBlock(block) }
+    }
+    if (pendingUsage) yield { type: 'usage', usage: pendingUsage }
+    const reason = pendingFinish ?? { kind: 'stop' as const }
+    yield {
+      type: 'finish',
+      reason: reason.kind === 'stop' && order.length === 0
+        ? {
+          kind: 'error',
+          failure: { message: 'model returned a completed response with no content', code: EMPTY_RESPONSE_CODE },
+        }
+        : reason,
+    }
+  }
+
   for await (const payload of payloads) {
     if (payload === DONE) {
-      for (const block of order) {
-        yield { type: 'block-end', index: block.index, block: closeBlock(block) }
-      }
-      if (pendingUsage) yield { type: 'usage', usage: pendingUsage }
-      const reason = pendingFinish ?? { kind: 'stop' as const }
-      yield {
-        type: 'finish',
-        reason: reason.kind === 'stop' && order.length === 0
-          ? {
-            kind: 'error',
-            failure: { message: 'model returned a completed response with no content', code: EMPTY_RESPONSE_CODE },
-          }
-          : reason,
-      }
+      yield* finish()
       return
     }
 
-    let chunk: WireChunk
+    let chunk: WireChunk & WireError
     try {
-      chunk = JSON.parse(payload) as WireChunk
+      chunk = JSON.parse(payload) as WireChunk & WireError
     } catch {
       throw new LlmError(`malformed SSE payload: ${payload.slice(0, 120)}`, 'MALFORMED_RESPONSE')
+    }
+    if (chunk.error !== undefined) {
+      const status = Number(chunk.error.code)
+      const hasStatus = Number.isInteger(status) && status >= 100 && status <= 599
+      const code = hasStatus
+        ? httpErrorCode(status, chunk.error)
+        : chunk.error.code?.trim().toUpperCase() || 'PROVIDER_ERROR'
+      throw new LlmError(
+        chunk.error.message || 'provider returned an in-band stream error',
+        code,
+        hasStatus ? { status } : {},
+      )
     }
 
     for (const choice of chunk.choices ?? []) {
@@ -167,7 +194,8 @@ export async function* translate(payloads: AsyncIterable<string>): AsyncGenerato
           yield { type: 'block-start', index: block.index, blockType: 'tool-call' }
         }
         if (call.id !== undefined) block.callId = call.id
-        if (call.function?.name !== undefined) block.name = call.function.name
+        const name = call.function?.name
+        if (name !== undefined && name.length > 0) block.name = name
         const fragment = call.function?.arguments ?? ''
         block.text += fragment
         yield {
@@ -189,7 +217,14 @@ export async function* translate(payloads: AsyncIterable<string>): AsyncGenerato
     if (chunk.usage) pendingUsage = mapUsage(chunk.usage)
   }
 
-  // parseSse guarantees the [DONE] sentinel (or throws); reaching here means
-  // the payload source violated that contract.
-  throw new LlmError('SSE payload stream ended without [DONE]', 'STREAM_CLOSED')
+  if (options.allowTerminalEof === true && pendingFinish !== undefined) {
+    yield* finish()
+    return
+  }
+  throw new LlmError(
+    options.allowTerminalEof === true
+      ? 'SSE payload stream ended without terminal finish'
+      : 'SSE payload stream ended without [DONE]',
+    'STREAM_CLOSED',
+  )
 }

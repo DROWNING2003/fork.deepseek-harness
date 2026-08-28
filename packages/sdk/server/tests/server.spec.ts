@@ -181,6 +181,65 @@ describe('HarnessSdkJsonRpcServer', () => {
     }
   })
 
+  it('resumes a persisted SDK session after the runtime restarts', { timeout: 15_000 }, async () => {
+    const storageDir = await mkdtemp(join(tmpdir(), 'dsh-jsonrpc-resume-'))
+    const llmServer = await mockCompletionServer()
+    vi.stubEnv('DEEPSEEK_API_KEY', 'test-key')
+    vi.stubEnv('DEEPSEEK_BASE_URL', llmServer.url)
+    let firstCtx: Context | undefined
+    let secondCtx: Context | undefined
+    try {
+      firstCtx = await makeHarness(storageDir)
+      const firstTransport = new FakeTransport()
+      const firstServer = new HarnessSdkJsonRpcServer(firstCtx, firstTransport)
+      await firstServer.handleRequest('initialize', {
+        cwd: storageDir,
+        provider: 'deepseek-official',
+        model: 'dsagent-model',
+      })
+      await firstServer.handleRequest('session/prompt', {
+        sessionId: 'persisted-main',
+        contentBlocks: [{ type: 'text', text: 'first turn' }],
+      })
+      await vi.waitFor(() => {
+        expect(firstTransport.notifications.findLast(n => n.method === 'session.status')).toEqual({
+          method: 'session.status',
+          params: { sessionId: 'persisted-main', status: 'idle' },
+        })
+      })
+      await firstServer.shutdown()
+      await firstCtx.fiber.dispose()
+      firstCtx = undefined
+
+      secondCtx = await makeHarness(storageDir)
+      const secondTransport = new FakeTransport()
+      const secondServer = new HarnessSdkJsonRpcServer(secondCtx, secondTransport)
+      await secondServer.handleRequest('initialize', {
+        cwd: storageDir,
+        provider: 'deepseek-official',
+        model: 'dsagent-model',
+      })
+      await secondServer.handleRequest('session/prompt', {
+        sessionId: 'persisted-main',
+        contentBlocks: [{ type: 'text', text: 'second turn' }],
+      })
+      await vi.waitFor(() => { expect(llmServer.requests).toHaveLength(2) })
+
+      const resumedRequest = llmServer.requests[1] as {
+        messages: { role: string; content?: string | { type: string; text?: string }[] }[]
+      }
+      const visibleMessages = JSON.stringify(resumedRequest.messages)
+      expect(visibleMessages).toContain('first turn')
+      expect(visibleMessages).toContain('done')
+      expect(visibleMessages).toContain('second turn')
+      await secondServer.shutdown()
+    } finally {
+      await firstCtx?.fiber.dispose()
+      await secondCtx?.fiber.dispose()
+      await rm(storageDir, { recursive: true, force: true })
+    }
+  })
+
   it('queues overlapping prompts for one session without blocking other sessions', async () => {
     const mainFollowup = vi.fn<Agent['followup']>()
     const mainAgent = ({
@@ -878,6 +937,26 @@ describe('HarnessSdkJsonRpcServer', () => {
       await handle?.dispose()
       await failedHandle?.dispose()
       await parentHandle?.dispose()
+      await ctx.fiber.dispose()
+      await rm(storageDir, { recursive: true, force: true })
+    }
+  })
+
+  it('configures the server-owned fallback adapter', async () => {
+    const storageDir = await mkdtemp(join(tmpdir(), 'dsh-jsonrpc-configured-fallback-'))
+    const ctx = await makeHarness(storageDir)
+    vi.stubEnv('OPENAI_API_KEY', 'test-key')
+    const server = new HarnessSdkJsonRpcServer(ctx, new FakeTransport(), {
+      fallbackLlm: { dialect: 'openai' },
+    })
+    try {
+      await server.initialize({ cwd: storageDir, provider: 'deepseek-official', model: 'gpt-4.1' })
+
+      expect(ctx.get('llm')?.listConfigurableProviders()).toEqual([
+        { provider: 'deepseek-official', displayName: 'OpenAI', settingsNs: 'llm-deepseek', settingsPath: [] },
+      ])
+      await server.shutdown()
+    } finally {
       await ctx.fiber.dispose()
       await rm(storageDir, { recursive: true, force: true })
     }

@@ -46,6 +46,11 @@ describe('parseSse', () => {
     expect(events).toEqual([DONE])
   })
 
+  it('allows clean EOF for OpenAI-compatible streams', async () => {
+    const events = await collect(parseSse(bytes('data: {"a":1}\n\n'), undefined, { allowTerminalEof: true }))
+    expect(events).toEqual(['{"a":1}'])
+  })
+
   it('throws STREAM_CLOSED when the stream ends without DONE', async () => {
     await expect(collect(parseSse(bytes('data: {"a":1}\n\n')))).rejects.toThrow(LlmError)
     await expect(collect(parseSse(bytes('data: {"a":1}\n\n')))).rejects.toThrow(/without \[DONE\]/)

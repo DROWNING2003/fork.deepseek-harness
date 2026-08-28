@@ -5,7 +5,9 @@
  * `llm-deepseek` user-settings section (`ctx.settings`) and resolves the API
  * key through the optional credential seam (`ctx.credentials`), so a changed
  * base URL, catalog, or key reaches the very next request without restarting
- * anything, while an in-flight stream keeps the facts it started with. The
+ * anything, while an in-flight stream keeps the facts it started with. A
+ * `dialect` of `openai` points the same route at plain OpenAI-compatible
+ * chat completions (GPT models or any gateway) with OpenAI defaults; the
  * one registration-captured fact — the retry policy — re-registers the route
  * in place when it changes.
  * @module @deepseek-ai/dsh-llm-deepseek
@@ -86,6 +88,7 @@ export const inject = ['llm']
 
 const NS = 'llm-deepseek'
 const DEFAULT_API_KEY_ENV = 'DEEPSEEK_API_KEY'
+const OPENAI_API_KEY_ENV = 'OPENAI_API_KEY'
 /** The single provider route this plugin owns. */
 const PROVIDER = 'deepseek-official'
 
@@ -120,14 +123,30 @@ const MODEL_MODALITIES = ['text', 'image'] as const satisfies readonly ModelModa
  * yml: a missing API key resolves through {@link Config.apiKeyEnv} at each
  * request (a request without any key fails with `MISSING_CREDENTIAL`, not at
  * plugin load), omitted thinking mode uses the provider default, and omitted
- * reasoning effort resolves to `high`.
+ * reasoning effort resolves to `high` on the DeepSeek dialect.
  */
 export interface Config {
-  /** Credential reference (environment-variable name) resolved per request; defaults to `DEEPSEEK_API_KEY`. */
+  /**
+   * Wire dialect: `deepseek` (default) speaks the DeepSeek chat-completions
+   * extensions (`thinking`, `reasoning_content` passback, effort `max`), while
+   * `openai` speaks plain OpenAI chat completions (GPT models or any
+   * OpenAI-compatible gateway): no `thinking` field, no reasoning passback,
+   * effort limited to `off`/`high`. The dialect also picks the defaults for
+   * {@link Config.apiKeyEnv}, {@link Config.baseURL}, and {@link Config.models}.
+   */
+  dialect?: 'deepseek' | 'openai'
+  /**
+   * Credential reference (environment-variable name) resolved per request;
+   * defaults to `DEEPSEEK_API_KEY`, or `OPENAI_API_KEY` on the OpenAI dialect.
+   */
   apiKeyEnv?: string
-  /** Endpoint base; falls back to $DEEPSEEK_BASE_URL from a trusted environment layer, then the public API. */
+  /**
+   * Endpoint base; falls back to `$DEEPSEEK_BASE_URL` (or `$OPENAI_BASE_URL`
+   * on the OpenAI dialect) from a trusted environment layer, then the provider
+   * public API.
+   */
   baseURL?: string
-  /** Deployment thinking policy; `disabled` limits every conversation request to `off`. */
+  /** Deployment thinking policy; `disabled` limits every conversation request to `off`. DeepSeek dialect only. */
   thinking?: 'enabled' | 'disabled'
   /** Default thinking effort (default `high`); `off` disables thinking per request. */
   reasoningEffort?: 'off' | 'low' | 'high' | 'max'
@@ -175,13 +194,14 @@ const catalogModel: z<DeepSeekCatalogModel> = z.object({
 })
 
 export const Config: z<Config> = z.object({
-  apiKeyEnv: z.string().role('credential-ref').default(DEFAULT_API_KEY_ENV),
+  dialect: z.union(['deepseek', 'openai']).default('deepseek'),
+  apiKeyEnv: z.string().role('credential-ref'),
   baseURL: z.string(),
   thinking: z.union(['enabled', 'disabled']),
   reasoningEffort: z.union(['off', 'low', 'high', 'max']),
   maxTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(DEFAULT_MAX_TOKENS),
   defaultContextWindow: z.number().step(1).min(1).default(DEFAULT_CONTEXT_WINDOW),
-  models: z.array(catalogModel).default(DEFAULT_MODELS),
+  models: z.array(catalogModel),
   streamIdleTimeoutMs: z.number().min(Number.MIN_VALUE).max(MAX_TIMER_DELAY_MS).default(DEFAULT_STREAM_IDLE_TIMEOUT_MS),
   maxRequestFilesBytes: z.number().step(1).min(1).default(DEFAULT_MAX_REQUEST_FILES_BYTES),
   maxInlineRequestImageBytes: z.number().step(1).min(1).default(DEFAULT_MAX_INLINE_REQUEST_IMAGE_BYTES),
@@ -196,11 +216,15 @@ export const Config: z<Config> = z.object({
   retryPolicy: RetryPolicySchema,
 })
 
-/** Public API default; the internal endpoint comes from $DEEPSEEK_BASE_URL. */
+/** Public DeepSeek API default; the internal endpoint comes from $DEEPSEEK_BASE_URL. */
 export const PUBLIC_BASE_URL = 'https://api.deepseek.com'
+/** Public OpenAI chat-completions default; the internal endpoint comes from $OPENAI_BASE_URL. */
+export const OPENAI_PUBLIC_BASE_URL = 'https://api.openai.com/v1'
 
 /** Environment variable naming this provider's endpoint, honored only from trusted layers. */
 const BASE_URL_ENV = 'DEEPSEEK_BASE_URL'
+/** Environment variable naming the OpenAI dialect's endpoint, honored only from trusted layers. */
+const OPENAI_BASE_URL_ENV = 'OPENAI_BASE_URL'
 
 /**
  * One resolution's complete request facts. Connection and credential facts
@@ -211,7 +235,7 @@ const BASE_URL_ENV = 'DEEPSEEK_BASE_URL'
 export type ResolvedDeepSeekOptions = DeepSeekConnectionOptions
 
 /** Resolve, validate, and detach the advisory model catalog. */
-function resolveModels(models: readonly DeepSeekCatalogModel[] | undefined): DeepSeekCatalogModel[] {
+function resolveModels(models: readonly DeepSeekCatalogModel[]): DeepSeekCatalogModel[] {
   const seen = new Set<string>()
   return (models ?? DEFAULT_MODELS).map((model) => {
     if (Object.hasOwn(model, 'imageDetail')) {
@@ -292,6 +316,15 @@ function resolveModels(models: readonly DeepSeekCatalogModel[] | undefined): Dee
  * @returns validated connection facts plus the credential reference.
  */
 export function resolveAdapterOptions(config: Config, environment?: LaunchEnvironmentSnapshot): ResolvedDeepSeekOptions {
+  const dialect = config.dialect ?? 'deepseek'
+  if (dialect === 'openai') {
+    if (config.thinking !== undefined) {
+      throw new Error('llm-deepseek: "thinking" is DeepSeek-only; remove it when dialect is "openai"')
+    }
+    if (config.reasoningEffort === 'max') {
+      throw new Error('llm-deepseek: reasoning effort "max" is DeepSeek-only; use "off" or "high" with dialect "openai"')
+    }
+  }
   if (config.thinking === 'disabled'
     && config.reasoningEffort !== undefined
     && config.reasoningEffort !== 'off') {
@@ -374,17 +407,18 @@ export function resolveAdapterOptions(config: Config, environment?: LaunchEnviro
     throw new Error('llm-deepseek: fileQuotaCleanupBatch must be an integer from 1 through 1000')
   }
   return {
-    apiKeyEnv: credentialRef(config.apiKeyEnv ?? DEFAULT_API_KEY_ENV),
+    apiKeyEnv: credentialRef(config.apiKeyEnv ?? (openai ? OPENAI_API_KEY_ENV : DEFAULT_API_KEY_ENV)),
     baseURL: config.baseURL
-      ?? environment?.get(BASE_URL_ENV)?.value
-      ?? PUBLIC_BASE_URL,
+      ?? environment?.get(openai ? OPENAI_BASE_URL_ENV : BASE_URL_ENV)?.value
+      ?? (openai ? OPENAI_PUBLIC_BASE_URL : PUBLIC_BASE_URL),
     defaults: {
+      dialect,
       thinking: config.thinking,
       reasoningEffort: config.reasoningEffort,
     },
     maxTokens: config.maxTokens ?? DEFAULT_MAX_TOKENS,
     defaultContextWindow: config.defaultContextWindow ?? DEFAULT_CONTEXT_WINDOW,
-    models: resolveModels(config.models),
+    models: resolveModels(models),
     streamIdleTimeoutMs,
     maxRequestFilesBytes,
     maxInlineRequestImageBytes,
@@ -400,6 +434,11 @@ export function resolveAdapterOptions(config: Config, environment?: LaunchEnviro
     },
     retryPolicy: resolveRetryPolicy(config.retryPolicy, 'llm-deepseek: retryPolicy'),
   }
+}
+
+/** The Models-page card name for a resolved dialect. */
+function displayNameOf(options: ResolvedDeepSeekOptions): string {
+  return options.defaults.dialect === 'openai' ? 'OpenAI' : 'DeepSeek'
 }
 
 export function apply(ctx: Context, config: Config): void {
@@ -474,17 +513,29 @@ export function apply(ctx: Context, config: Config): void {
   // Route effects bind to this apply fiber via the stable `ctx` reference,
   // even when a swap runs inside the scoped settings callback below.
   const registration = ctx.llm.registerAdapter([PROVIDER], adapter)
-  let registeredPolicy = options().retryPolicy
+  const registeredFacts = { retryPolicy: options().retryPolicy, dialect: options().defaults.dialect }
   const ensureRegistrationFacts = (): void => {
-    const policy = options().retryPolicy
-    if (deepEqualJson(policy, registeredPolicy)) return
+    const resolved = options()
+    const policy = resolved.retryPolicy
+    const dialect = resolved.defaults.dialect
     // The registry captures the retry policy at registration, so it is the one
     // fact per-request resolution cannot refresh. `replace` re-reads it in one
     // synchronous registry section: disposing and re-registering instead would
     // publish an empty route set between the two, and an observer that reacted
-    // to it would see this provider disappear and come back.
-    registration.replace([PROVIDER])
-    registeredPolicy = policy
+    // to it would see this provider disappear and come back. The configurable
+    // directory captures the display name the same way, so a dialect switch
+    // swaps that registration in place; each swap announces itself exactly
+    // once, like a first registration.
+    if (!deepEqualJson(policy, registeredFacts.retryPolicy)) {
+      registration.replace([PROVIDER])
+      registeredFacts.retryPolicy = policy
+    }
+    if (dialect !== registeredFacts.dialect) {
+      directory.replace([
+        { provider: PROVIDER, displayName: displayNameOf(resolved), settingsNs: NS, settingsPath: [] },
+      ])
+      registeredFacts.dialect = dialect
+    }
   }
 
   ctx.inject(['settings'], (settingsCtx) => {

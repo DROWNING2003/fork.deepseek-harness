@@ -1452,3 +1452,150 @@ describe('API key field', () => {
     expect(screen.queryByText(en.customTitle)).toBeNull()
   })
 })
+
+describe('deepseek family dialect editor', () => {
+  const DeepSeekConfig = Schema.object({
+    dialect: Schema.union(['deepseek', 'openai']),
+    apiKeyEnv: Schema.string().role('credential-ref'),
+    baseURL: Schema.string(),
+    reasoningEffort: Schema.union(['off', 'high', 'max']),
+    maxTokens: Schema.number().step(1).min(1),
+    defaultContextWindow: Schema.number().step(1).min(1),
+    models: Schema.array(Schema.object({
+      id: Schema.string().required(),
+      name: Schema.string(),
+      description: Schema.string(),
+      contextWindow: Schema.number().step(1).min(1),
+      maxTokens: Schema.number().step(1).min(1),
+    })),
+  })
+
+  function deepSeekNamespace(value: Record<string, JsonValue>): SettingsNamespaceView {
+    return {
+      ns: 'llm-deepseek',
+      schema: JSON.parse(JSON.stringify(DeepSeekConfig.toJSON())) as JsonValue,
+      value,
+      base: {},
+      user: value,
+      applies: 'live',
+      secrets: [],
+      revision: 5,
+    }
+  }
+
+  /** The deepseek row, opened and with its customized fold expanded. */
+  function openDeepSeekEditor(): void {
+    const row = screen.getByText('DeepSeek').closest('li')
+    if (row === null) throw new Error('no deepseek row')
+    fireEvent.click(within_(row, en.edit))
+    const summary = document.querySelector('summary')
+    if (summary === null) throw new Error('no customized fold')
+    fireEvent.click(summary)
+  }
+
+  async function mountDeepSeek(options: { namespace?: SettingsNamespaceView } = {}) {
+    const namespace = options.namespace ?? deepSeekNamespace({})
+    const mutate: ReturnType<typeof vi.fn> = vi.fn(() => Promise.resolve(ok(namespace)))
+    const set: ReturnType<typeof vi.fn> = vi.fn(() => Promise.resolve(ok({})))
+    const face = {
+      llm: {
+        listProviders: () => Promise.resolve(ok([{
+          id: 'deepseek-official',
+          name: 'DeepSeek',
+        }])),
+        listConfigurableProviders: () => Promise.resolve(ok([{
+          provider: 'deepseek-official',
+          displayName: 'DeepSeek',
+          settingsNs: 'llm-deepseek',
+          settingsPath: [],
+        }])),
+        discoverModels: vi.fn(() => Promise.resolve(ok([]))),
+      },
+      settings: {
+        describe: () => Promise.resolve(ok({ writable: true, hasDocument: false, namespaces: [namespace] })),
+        mutate,
+      },
+      credentials: {
+        describe: vi.fn((refs: string[]) => Promise.resolve(ok(
+          // The deepseek row must render as an ordinary row, so its credential
+          // reads as already configured regardless of the ref.
+          Object.fromEntries(refs.map(ref => [ref, { configured: true, writable: true }])),
+        ))),
+        set,
+        unset: vi.fn(),
+      },
+    }
+    const ctx = ctxWith(face)
+    const controller = new ModelsSettingsStore(ctx, settingsSchema, new SettingsDescribeMirror(ctx))
+    await controller.load()
+    const injected: ModelsSectionProps = {
+      controller,
+      useSnapshot: bindSnapshotSelector(controller.store),
+      operations: operationsWith(face),
+      schema: settingsSchema,
+      t,
+      renderSlot: () => null,
+    }
+    render(<ModelsSection {...injected} />)
+    return { mutate, set, namespace }
+  }
+
+  it('shows DeepSeek defaults until the dialect is switched', async () => {
+    await mountDeepSeek()
+    openDeepSeekEditor()
+
+    expect(screen.getByLabelText<HTMLSelectElement>(en.dialect).value).toBe('deepseek')
+    expect(screen.getByLabelText(en.baseUrl).getAttribute('placeholder')).toBe('https://api.deepseek.com')
+    expect(screen.getByDisplayValue('deepseek-v4-flash')).toBeTruthy()
+    expect(screen.getByDisplayValue('DeepSeek-V4-Flash')).toBeTruthy()
+  })
+
+  it('swaps the endpoint placeholder, model defaults, and key reference when switching to OpenAI', async () => {
+    const { mutate, set } = await mountDeepSeek()
+    openDeepSeekEditor()
+
+    fireEvent.change(screen.getByLabelText(en.dialect), { target: { value: 'openai' } })
+    expect(screen.getByLabelText(en.baseUrl).getAttribute('placeholder')).toBe('https://api.openai.com/v1')
+    expect(screen.getByDisplayValue('gpt-4o')).toBeTruthy()
+    expect(screen.queryByDisplayValue('deepseek-v4-flash')).toBeNull()
+
+    // One apply writes the dialect and stores the key under the new reference.
+    fireEvent.change(screen.getByLabelText(en.keyInput), { target: { value: 'sk-gpt' } })
+    fireEvent.click(screen.getByText(en.apply))
+
+    await waitFor(() => { expect(set).toHaveBeenCalled() })
+    expect(set.mock.calls[0]).toEqual(['OPENAI_API_KEY', 'sk-gpt'])
+    expect(firstMutate(mutate)).toMatchObject({
+      ns: 'llm-deepseek',
+      expectedRevision: 5,
+      ops: [{ op: 'set', path: ['dialect'], value: 'openai' }],
+    })
+  })
+
+  it('keys a stored openai dialect under OPENAI_API_KEY without touching it', async () => {
+    const { set } = await mountDeepSeek({ namespace: deepSeekNamespace({ dialect: 'openai' }) })
+    openDeepSeekEditor()
+
+    fireEvent.change(screen.getByLabelText(en.keyInput), { target: { value: 'sk-gpt' } })
+    fireEvent.click(screen.getByText(en.apply))
+
+    await waitFor(() => { expect(set).toHaveBeenCalled() })
+    expect(set.mock.calls[0]).toEqual(['OPENAI_API_KEY', 'sk-gpt'])
+  })
+
+  it('restores DeepSeek defaults when the dialect select returns to DeepSeek', async () => {
+    const { mutate } = await mountDeepSeek({ namespace: deepSeekNamespace({ dialect: 'openai' }) })
+    openDeepSeekEditor()
+
+    fireEvent.change(screen.getByLabelText(en.dialect), { target: { value: 'deepseek' } })
+    expect(screen.getByDisplayValue('deepseek-v4-flash')).toBeTruthy()
+    expect(screen.queryByDisplayValue('gpt-4o')).toBeNull()
+
+    fireEvent.click(screen.getByText(en.apply))
+    await waitFor(() => { expect(mutate).toHaveBeenCalled() })
+    // Returning to DeepSeek stores the explicit choice, mirroring the select.
+    expect(firstMutate(mutate)).toMatchObject({
+      ops: [{ op: 'set', path: ['dialect'], value: 'deepseek' }],
+    })
+  })
+})

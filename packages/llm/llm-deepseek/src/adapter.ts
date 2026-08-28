@@ -191,6 +191,11 @@ const OFF_ONLY_REASONING_EFFORTS = [
     description: 'Use for simple tasks that do not need reasoning.',
   },
 ] as const
+/** The OpenAI dialect's levels: the wire accepts `off`/`high`, never `max`. */
+const OPENAI_REASONING_EFFORTS = [
+  { id: OFF_REASONING_EFFORT, name: 'Off' },
+  { id: HIGH_REASONING_EFFORT, name: 'High' },
+] as const
 
 /** Marks a failed file-id resolution that may be retried as an inline request. */
 class FileResolutionFailure extends Error {
@@ -407,11 +412,13 @@ export class DeepSeekAdapter extends LlmAdapter {
         : modelInfo(provider, configured),
       context: { contextWindow },
       defaultMaxTokens: configured?.maxTokens ?? connection.maxTokens,
-      ...connection.defaults.thinking === 'disabled'
+      ...connection.defaults.dialect === 'openai'
         ? {
           reasoning: {
-            efforts: OFF_ONLY_REASONING_EFFORTS,
-            defaultEffort: OFF_REASONING_EFFORT,
+            efforts: OPENAI_REASONING_EFFORTS,
+            defaultEffort: connection.defaults.reasoningEffort === 'high'
+              ? HIGH_REASONING_EFFORT
+              : OFF_REASONING_EFFORT,
           },
         }
         : {

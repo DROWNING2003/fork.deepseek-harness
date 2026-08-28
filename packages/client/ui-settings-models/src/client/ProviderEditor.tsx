@@ -33,7 +33,7 @@ import {
 import { apiKeyFailure } from './apiKey.ts'
 import { EditorFooter } from './EditorFooter.tsx'
 import { ModelListEditor } from './ModelListEditor.tsx'
-import { deriveKeyRef, protocolChoices } from './store.ts'
+import { credentialRefOf, protocolChoices } from './store.ts'
 import type { ModelsOperations } from './operations.ts'
 import type { SettingsSchemaOperations } from './schema-operations.ts'
 import type { en } from './locales.ts'
@@ -44,6 +44,37 @@ type EditorLayout = 'deepseek' | 'pi-ai' | 'unknown'
 
 /** The public DeepSeek endpoint shown as the deepseek base-URL placeholder. */
 const DEEPSEEK_PUBLIC_BASE_URL = 'https://api.deepseek.com'
+/** The public OpenAI endpoint shown as the OpenAI-dialect base-URL placeholder. */
+const OPENAI_PUBLIC_BASE_URL = 'https://api.openai.com/v1'
+
+/** Advisory llm-deepseek catalogs used while no layer owns `models`. */
+const DEEPSEEK_DEFAULT_MODELS = [
+  {
+    id: 'deepseek-v4-flash',
+    name: 'DeepSeek-V4-Flash',
+    description: 'Fast, efficient, and economical; suited to focused, routine, or parallel tasks.',
+    contextWindow: 1_000_000,
+  },
+  {
+    id: 'deepseek-v4-pro',
+    name: 'DeepSeek-V4-Pro',
+    description: 'Stronger agentic coding, knowledge, and difficult reasoning; suited to complex or quality-critical tasks at higher cost.',
+    contextWindow: 1_000_000,
+  },
+  {
+    id: 'deepseek-v4-flash-vision-exp',
+    name: 'DeepSeek-V4-Flash-Vision-Exp',
+    contextWindow: 1_000_000,
+    inputModalities: ['text', 'image'],
+    imagePixelBudget: 16_777_216,
+    imageMaxBytes: 20 * 1024 * 1024,
+  },
+] as const
+const OPENAI_DEFAULT_MODELS = [
+  { id: 'gpt-4o', name: 'GPT-4o', contextWindow: 128_000, maxTokens: 16_384 },
+  { id: 'gpt-4o-mini', name: 'GPT-4o mini', contextWindow: 128_000, maxTokens: 16_384 },
+  { id: 'gpt-4.1', name: 'GPT-4.1', contextWindow: 1_047_576, maxTokens: 32_768 },
+] as const
 
 /** Props of {@link ProviderEditor}. */
 export interface ProviderEditorProps {
@@ -136,20 +167,6 @@ function layoutOf(ns: string): EditorLayout {
   return 'unknown'
 }
 
-/** The credential reference this profile resolves keys through. */
-function refFor(
-  schema: SettingsSchemaOperations,
-  namespace: SettingsNamespaceView,
-  path: readonly string[],
-  provider: string,
-): string {
-  const profile = schema.getPath(namespace.value, path)
-  const named = typeof profile === 'object' && profile !== null
-    ? (profile as { apiKeyEnv?: unknown }).apiKeyEnv
-    : undefined
-  return typeof named === 'string' && named.length > 0 ? named : deriveKeyRef(provider)
-}
-
 /**
  * Render one provider's editing card.
  * @param props - the addressed profile plus wire faces and copy.
@@ -174,7 +191,14 @@ export function ProviderEditor(props: ProviderEditorProps): ReactNode {
   const fallback = schema.getPath(namespace.value, settingsPath)
   const disabled = props.readOnly || busy
   const layout = layoutOf(namespace.ns)
-  const keyRef = refFor(schema, namespace, settingsPath, props.provider)
+  const draftDialect = schema.getPath(draft, ['dialect'])
+  const fallbackDialect = schema.getPath(fallback, ['dialect'])
+  const dialect = draftDialect === 'openai' || draftDialect === 'deepseek'
+    ? draftDialect
+    : fallbackDialect === 'openai' || fallbackDialect === 'deepseek'
+      ? fallbackDialect
+      : 'deepseek'
+  const keyRef = credentialRefOf(namespace, settingsPath, schema, props.provider, dialect)
   // The same schema read the create card makes, so the choices offered here
   // and there cannot drift apart: both come from the adapter's own `Config`.
   // Only the pi-ai layout has a per-route protocol for the read to find, and
@@ -316,15 +340,20 @@ export function ProviderEditor(props: ProviderEditorProps): ReactNode {
   const keyLocked = keyState?.writable === false
 
   /**
-   * The catalog beneath the user layer: what the composition entry pinned, or
-   * else the schema default that `resolve` would supply. The effective value
-   * cannot answer this — it still carries the stored override until the unset
-   * is applied, so reading it would echo that override straight back the
-   * moment reset drops it, leaving the rows unchanged until a reload.
+   * The catalog beneath the user layer: what the composition entry pinned, the
+   * schema default that `resolve` would supply, or — since the adapter's
+   * catalog default is per-dialect and the schema cannot express that — the
+   * dialect's advisory defaults mirrored from the adapter resolve.
    */
   const inheritedModels = (): unknown => {
     const pinned = schema.getPath(namespace.base, [...settingsPath, 'models'])
-    return pinned ?? schema.nodeAtPath(root, [...settingsPath, 'models'])?.meta.default
+    if (pinned !== undefined) return pinned
+    const schemaDefault = schema.nodeAtPath(root, [...settingsPath, 'models'])?.meta.default
+    if (Array.isArray(schemaDefault) && schemaDefault.length > 0) return schemaDefault
+    if (layout === 'deepseek') {
+      return dialect === 'openai' ? OPENAI_DEFAULT_MODELS : DEEPSEEK_DEFAULT_MODELS
+    }
+    return schemaDefault
   }
 
   /**
@@ -407,6 +436,25 @@ export function ProviderEditor(props: ProviderEditorProps): ReactNode {
                 </div>
               )
               : null}
+            {/* The dialect picks the whole deepseek-family wire surface; the
+                pi-ai family's route protocol sits beside the endpoint instead. */}
+            {family === 'deepseek'
+              ? (
+                <div className={styles['field']}>
+                  <span className={styles['fieldLabel']}>{t('dialect')}</span>
+                  <select
+                    className={`${styles['input']} ${styles['selectInput']}`}
+                    value={dialect}
+                    aria-label={t('dialect')}
+                    disabled={disabled}
+                    onChange={(event) => { setField('dialect', event.target.value) }}
+                  >
+                    <option value="deepseek">{t('dialectDeepseek')}</option>
+                    <option value="openai">{t('dialectOpenai')}</option>
+                  </select>
+                </div>
+              )
+              : null}
             <div className={styles['field']}>
               <span className={styles['fieldLabel']}>{t('baseUrl')}</span>
               <input
@@ -414,7 +462,7 @@ export function ProviderEditor(props: ProviderEditorProps): ReactNode {
                 type="text"
                 value={stringAt(draft, 'baseURL') ?? ''}
                 placeholder={family === 'deepseek'
-                  ? DEEPSEEK_PUBLIC_BASE_URL
+                  ? dialect === 'openai' ? OPENAI_PUBLIC_BASE_URL : DEEPSEEK_PUBLIC_BASE_URL
                   : stringAt(fallback, 'baseURL') ?? t('baseUrlDefault')}
                 aria-label={t('baseUrl')}
                 disabled={disabled}

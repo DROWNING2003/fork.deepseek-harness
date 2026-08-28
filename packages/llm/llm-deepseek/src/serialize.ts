@@ -18,8 +18,12 @@ import type {
   WireUserContentPart,
 } from './types.ts'
 
+/** Wire dialect: DeepSeek extensions, or plain OpenAI-compatible chat completions. */
+export type WireDialect = 'deepseek' | 'openai'
+
 /** Adapter-level request defaults (from plugin config). */
 export interface RequestDefaults {
+  dialect?: WireDialect | undefined
   thinking?: 'enabled' | 'disabled' | undefined
   reasoningEffort?: 'off' | 'low' | 'high' | 'max' | undefined
 }
@@ -81,10 +85,16 @@ function reasoningEffort(effort: NonNullable<GenerateOptions['reasoningEffort']>
 
 /** Resolve one legal thinking/effort pair without exposing `off` as a wire effort. */
 function resolveThinking(options: GenerateOptions, defaults: RequestDefaults): ResolvedThinking {
-  if (options.purpose === 'session-title') return { thinking: 'disabled' }
+  const dialect = defaults.dialect ?? 'deepseek'
   const effort = options.reasoningEffort === undefined
     ? defaults.reasoningEffort
-    : reasoningEffort(options.reasoningEffort)
+    : reasoningEffort(options.reasoningEffort, dialect)
+  if (dialect === 'openai') {
+    // Plain OpenAI chat completions: no `thinking` field exists, and only the
+    // `high` level maps to a wire `reasoning_effort` (reasoning-capable models).
+    return effort === 'high' ? { reasoningEffort: 'high' } : {}
+  }
+  if (options.purpose === 'session-title') return { thinking: 'disabled' }
   if (defaults.thinking === 'disabled' && effort !== undefined && effort !== 'off') {
     throw new LlmError(
       `DeepSeek deployment does not support reasoning effort "${effort}"`,
@@ -200,7 +210,7 @@ function userContent(parts: readonly WireUserContentPart[]): string | WireUserCo
 }
 
 /** Serialize one assistant message (text + reasoning + tool calls). */
-function serializeAssistant(message: Message): WireMessage {
+function serializeAssistant(message: Message, dialect: WireDialect): WireMessage {
   const text = flattenText(message.content)
   const reasoning = message.content
     .filter(block => block.type === 'reasoning')
@@ -241,9 +251,11 @@ function serializeAssistant(message: Message): WireMessage {
  * user-role message, so a mixed user message contributes its text first and
  * its tool results as separate wire messages after.
  * @param messages - the harness conversation, in order.
+ * @param dialect - wire dialect (defaults to `deepseek`); controls the
+ * DeepSeek-only `reasoning_content` passback.
  * @returns the wire messages; order preserved, each tool result expanded into its own entry.
  */
-export function serializeMessages(messages: Message[]): WireMessage[] {
+export function serializeMessages(messages: Message[], dialect: WireDialect = 'deepseek'): WireMessage[] {
   const wire: WireMessage[] = []
   for (const message of messages) {
     assertTextOnly(message.content)
@@ -252,7 +264,7 @@ export function serializeMessages(messages: Message[]): WireMessage[] {
       continue
     }
     if (message.role === 'assistant') {
-      wire.push(serializeAssistant(message))
+      wire.push(serializeAssistant(message, dialect))
       continue
     }
     // user role: tool results ride in user messages in the harness
@@ -386,7 +398,8 @@ export function serializeRequest(
   if (options.system !== undefined) {
     messages.push({ role: 'system', content: options.system })
   }
-  messages.push(...serializeMessages(options.messages))
+  const dialect = defaults.dialect ?? 'deepseek'
+  messages.push(...serializeMessages(options.messages, dialect))
 
   return requestWithMessages(options, messages, defaults)
 }

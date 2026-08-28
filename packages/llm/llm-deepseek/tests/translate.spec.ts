@@ -123,6 +123,28 @@ describe('translate: tool calls', () => {
     ])
   })
 
+  it('preserves the first non-empty tool name across empty gateway deltas', async () => {
+    const chunks = await collect(translate(feed(
+      firstChunk,
+      { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_bash', type: 'function', function: { name: 'bash', arguments: '' } }] } }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, function: { name: '', arguments: '{"command"' } }] } }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, function: { name: '', arguments: ':"pwd"}' } }] } }] },
+      { choices: [{ delta: {}, finish_reason: 'tool_calls' }] },
+      DONE,
+    )))
+
+    expect(chunks.filter(chunk => chunk.type === 'tool-call-delta')).toEqual([
+      { type: 'tool-call-delta', index: 0, id: 'call_bash', name: 'bash', argumentsDelta: '' },
+      { type: 'tool-call-delta', index: 0, id: 'call_bash', name: 'bash', argumentsDelta: '{"command"' },
+      { type: 'tool-call-delta', index: 0, id: 'call_bash', name: 'bash', argumentsDelta: ':"pwd"}' },
+    ])
+    expect(chunks.find(chunk => chunk.type === 'block-end')).toEqual({
+      type: 'block-end',
+      index: 0,
+      block: { type: 'tool-call', id: 'call_bash', name: 'bash', arguments: '{"command":"pwd"}' },
+    })
+  })
+
   it('disambiguates parallel tool calls by wire index', async () => {
     const chunks = await collect(translate(feed(
       firstChunk,
@@ -251,9 +273,42 @@ describe('translate: finish and usage handling', () => {
 })
 
 describe('translate: errors', () => {
+  it('surfaces HTTP-like errors embedded in a successful SSE response', async () => {
+    await expect(collect(translate(feed({
+      error: { message: 'upstream temporarily unavailable', code: '500' },
+    })))).rejects.toMatchObject({
+      message: 'upstream temporarily unavailable',
+      code: 'SERVER',
+      failure: { status: 500 },
+    })
+  })
+
+  it('surfaces named in-band provider errors', async () => {
+    await expect(collect(translate(feed({
+      error: { message: 'gateway rejected request', code: 'gateway_error' },
+    })))).rejects.toMatchObject({
+      message: 'gateway rejected request',
+      code: 'GATEWAY_ERROR',
+    })
+  })
+
   it('throws MALFORMED_RESPONSE for invalid JSON payloads', async () => {
     await expect(collect(translate(feed('{bad json')))).rejects.toThrow(LlmError)
     await expect(collect(translate(feed('{bad json')))).rejects.toThrow(/malformed SSE payload/)
+  })
+
+  it('accepts OpenAI-compatible EOF after a terminal finish', async () => {
+    const chunks = await collect(translate(feed(
+      firstChunk,
+      { choices: [{ delta: { content: 'done' } }] },
+      { choices: [{ delta: {}, finish_reason: 'stop' }] },
+    ), { allowTerminalEof: true }))
+
+    expect(chunks.at(-1)).toEqual({ type: 'finish', reason: { kind: 'stop' } })
+  })
+
+  it('throws STREAM_CLOSED when compatible EOF has no terminal finish', async () => {
+    await expect(collect(translate(feed(firstChunk), { allowTerminalEof: true }))).rejects.toThrow(/without terminal finish/)
   })
 
   it('throws STREAM_CLOSED when the payload source ends without DONE', async () => {

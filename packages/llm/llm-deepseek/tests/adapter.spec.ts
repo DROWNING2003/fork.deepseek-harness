@@ -1201,6 +1201,72 @@ describe('DeepSeekAdapter against a mock server', () => {
     })
   })
 
+  it('speaks plain OpenAI chat completions on the openai dialect', async () => {
+    const server = await mockServer([{ kind: 'sse', events: textEvents }])
+    vi.stubEnv('OPENAI_API_KEY', 'openai-test-key')
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LlmDeepSeek, { baseURL: server.url, dialect: 'openai' })
+
+    await assemble(ctx, {
+      model: 'gpt-4o',
+      messages: [createUserMessage({
+        content: [{ type: 'text', text: 'hi' }],
+        source: { kind: 'plugin', plugin: 'test' },
+      })],
+    })
+    // No DeepSeek wire extensions; the off default sends neither field, and
+    // the catalogued gpt-4o cap (16,384) beats the profile-wide 256,000.
+    expect(server.requests[0]).toMatchObject({
+      model: 'gpt-4o',
+      stream: true,
+      stream_options: { include_usage: true },
+      max_tokens: 16_384,
+    })
+    expect(server.requests[0]).not.toHaveProperty('thinking')
+    expect(server.requests[0]).not.toHaveProperty('reasoning_effort')
+    expect(server.headers[0]?.authorization).toBe('Bearer openai-test-key')
+    // The dialect exposes only off/high and defaults to off.
+    await expect(ctx.llm.resolveModelInfo('deepseek-official', 'gpt-4o'))
+      .resolves.toMatchObject({
+        reasoning: {
+          efforts: [
+            { id: ReasoningEffortId('off'), name: 'Off' },
+            { id: ReasoningEffortId('high'), name: 'High' },
+          ],
+          defaultEffort: ReasoningEffortId('off'),
+        },
+      })
+  })
+
+  it('maps an explicit high default to a wire reasoning effort on the openai dialect', async () => {
+    const server = await mockServer([{ kind: 'sse', events: textEvents }])
+    vi.stubEnv('OPENAI_API_KEY', 'openai-test-key')
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LlmDeepSeek, { baseURL: server.url, dialect: 'openai', reasoningEffort: 'high' })
+
+    await assemble(ctx, { model: 'gpt-4o', messages: [] })
+    expect(server.requests[0]).toMatchObject({ reasoning_effort: 'high' })
+    expect(server.requests[0]).not.toHaveProperty('thinking')
+  })
+
+  it('rejects the DeepSeek-only max effort on the openai dialect', async () => {
+    expect(() => resolveAdapterOptions({ dialect: 'openai', reasoningEffort: 'max' }))
+      .toThrow(/max.*DeepSeek-only/)
+    expect(() => resolveAdapterOptions({ dialect: 'openai', thinking: 'enabled' }))
+      .toThrow(/thinking.*DeepSeek-only/)
+
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await expect(ctx.plugin(LlmDeepSeek, {
+      baseURL: 'http://127.0.0.1:1',
+      dialect: 'openai',
+      reasoningEffort: 'max',
+    })).rejects.toThrow(/max.*DeepSeek-only/)
+    expect(ctx.llm.listProviders()).toEqual([])
+  })
+
   it('uses the configured maxTokens default and preserves an explicit request cap', async () => {
     const server = await mockServer([
       { kind: 'sse', events: textEvents },
@@ -1913,14 +1979,38 @@ describe('plugin registration and config', () => {
       .resolves.toMatchObject({ context: { contextWindow: 256_000 } })
   })
 
-  it('allows an explicit empty model catalog', async () => {
+  it('treats an empty model list as the dialect default catalog', async () => {
+    // The settings layer normalizes an absent `models` key to an empty array,
+    // so an empty list cannot be told apart from an unset one and must fall
+    // back to the dialect defaults rather than advertising no models at all.
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(LlmDeepSeek, {
       baseURL: 'http://127.0.0.1:1',
       models: [],
     })
-    await expect(ctx.llm.listModels('deepseek-official')).resolves.toEqual([])
+    await expect(ctx.llm.listModels('deepseek-official')).resolves.toEqual([
+      {
+        provider: 'deepseek-official',
+        id: 'deepseek-v4-flash',
+        name: 'DeepSeek-V4-Flash',
+        description: 'Fast, efficient, and economical; suited to focused, routine, or parallel tasks.',
+        inputModalities: ['text'],
+      },
+      {
+        provider: 'deepseek-official',
+        id: 'deepseek-v4-pro',
+        name: 'DeepSeek-V4-Pro',
+        description: 'Stronger agentic coding, knowledge, and difficult reasoning; suited to complex or quality-critical tasks at higher cost.',
+        inputModalities: ['text'],
+      },
+      {
+        provider: 'deepseek-official',
+        id: 'deepseek-v4-flash-vision-exp',
+        name: 'DeepSeek-V4-Flash-Vision-Exp',
+        inputModalities: ['text', 'image'],
+      },
+    ])
   })
 
   const invalidModels: Array<[LlmDeepSeek.DeepSeekCatalogModel[], RegExp]> = [
