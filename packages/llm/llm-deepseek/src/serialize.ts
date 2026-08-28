@@ -49,7 +49,7 @@ export type ImageRequestRepresentation =
 /** Dependencies required only when the request contains image input. */
 export interface ImageSerializationOptions {
   /** Wire dialect used for assistant-history serialization. */
-  dialect?: WireDialect
+  dialect?: WireDialect | undefined
   /** One representation used for every retained image in this request. */
   representation: ImageRequestRepresentation
   /** Request versions prepared for the conservatively retained normalized attachments, keyed by attachment id. */
@@ -74,8 +74,17 @@ export interface ImageWireLocation {
 
 const TOOL_RESULT_IMAGE_TEXT = 'Attached image(s) from tool result:'
 
-/** Validate the adapter-owned effort before resolving its DeepSeek wire fields. */
-function reasoningEffort(effort: NonNullable<GenerateOptions['reasoningEffort']>): 'off' | 'low' | 'high' | 'max' {
+/** Validate the adapter-owned effort before resolving its wire fields. */
+function reasoningEffort(
+  effort: NonNullable<GenerateOptions['reasoningEffort']>,
+  dialect: WireDialect,
+): 'off' | 'low' | 'high' | 'max' {
+  if (dialect === 'openai' && effort === 'max') {
+    throw new LlmError(
+      `The OpenAI dialect supports reasoning effort "off" or "high", not "${effort}"`,
+      'UNSUPPORTED_REASONING_EFFORT',
+    )
+  }
   if (effort === 'off' || effort === 'low' || effort === 'high' || effort === 'max') {
     return effort as 'off' | 'low' | 'high' | 'max'
   }
