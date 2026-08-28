@@ -115,6 +115,12 @@ const DEFAULT_MODELS: DeepSeekCatalogModel[] = [
   },
 ]
 
+const OPENAI_DEFAULT_MODELS: DeepSeekCatalogModel[] = [
+  { id: 'gpt-4o', name: 'GPT-4o', contextWindow: 128_000, maxTokens: 16_384 },
+  { id: 'gpt-4o-mini', name: 'GPT-4o mini', contextWindow: 128_000, maxTokens: 16_384 },
+  { id: 'gpt-4.1', name: 'GPT-4.1', contextWindow: 1_047_576, maxTokens: 32_768 },
+]
+
 const MODEL_MODALITIES = ['text', 'image'] as const satisfies readonly ModelModality[]
 
 /**
@@ -406,6 +412,10 @@ export function resolveAdapterOptions(config: Config, environment?: LaunchEnviro
     || fileQuotaCleanupBatch > 1_000) {
     throw new Error('llm-deepseek: fileQuotaCleanupBatch must be an integer from 1 through 1000')
   }
+  const openai = dialect === 'openai'
+  const models = config.models === undefined || config.models.length === 0
+    ? (openai ? OPENAI_DEFAULT_MODELS : DEFAULT_MODELS)
+    : config.models
   return {
     apiKeyEnv: credentialRef(config.apiKeyEnv ?? (openai ? OPENAI_API_KEY_ENV : DEFAULT_API_KEY_ENV)),
     baseURL: config.baseURL
@@ -507,8 +517,8 @@ export function apply(ctx: Context, config: Config): void {
         ?? Promise.resolve({ fields: {}, accept: () => Promise.resolve() })
     },
   })
-  ctx.llm.registerConfigurableProviders([
-    { provider: PROVIDER, displayName: 'DeepSeek', settingsNs: NS, settingsPath: [] },
+  const directory = ctx.llm.registerConfigurableProviders([
+    { provider: PROVIDER, displayName: displayNameOf(options()), settingsNs: NS, settingsPath: [] },
   ])
   // Route effects bind to this apply fiber via the stable `ctx` reference,
   // even when a swap runs inside the scoped settings callback below.

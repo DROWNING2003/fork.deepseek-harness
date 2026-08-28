@@ -48,6 +48,8 @@ export type ImageRequestRepresentation =
 
 /** Dependencies required only when the request contains image input. */
 export interface ImageSerializationOptions {
+  /** Wire dialect used for assistant-history serialization. */
+  dialect?: WireDialect
   /** One representation used for every retained image in this request. */
   representation: ImageRequestRepresentation
   /** Request versions prepared for the conservatively retained normalized attachments, keyed by attachment id. */
@@ -240,7 +242,7 @@ function serializeAssistant(message: Message, dialect: WireDialect): WireMessage
     // elsewhere; a gateway re-encoding the conversation for another vendor
     // recovers that turn's upstream thinking signature by hashing this exact
     // text, which a tool-call-free turn carries nowhere else.
-    ...reasoning.length > 0 ? { reasoning_content: reasoning } : {},
+    ...dialect === 'deepseek' && reasoning.length > 0 ? { reasoning_content: reasoning } : {},
     ...toolCalls.length > 0 ? { tool_calls: toolCalls } : {},
   }
 }
@@ -319,7 +321,7 @@ export async function serializeMessagesWithImages(
     }
     if (message.role === 'assistant') {
       flushToolImages()
-      wire.push(serializeAssistant(message))
+      wire.push(serializeAssistant(message, images.dialect ?? 'deepseek'))
       continue
     }
 

@@ -184,12 +184,9 @@ const REASONING_EFFORTS = [
     description: 'Reserve for the hardest quality-first tasks.',
   },
 ] as const
+/** The deployment-disabled dialect exposes only its supported `off` level. */
 const OFF_ONLY_REASONING_EFFORTS = [
-  {
-    id: OFF_REASONING_EFFORT,
-    name: 'Off',
-    description: 'Use for simple tasks that do not need reasoning.',
-  },
+  { id: OFF_REASONING_EFFORT, name: 'Off', description: 'Use for simple tasks that do not need reasoning.' },
 ] as const
 /** The OpenAI dialect's levels: the wire accepts `off`/`high`, never `max`. */
 const OPENAI_REASONING_EFFORTS = [
@@ -421,18 +418,25 @@ export class DeepSeekAdapter extends LlmAdapter {
               : OFF_REASONING_EFFORT,
           },
         }
-        : {
-          reasoning: {
-            efforts: REASONING_EFFORTS,
-            defaultEffort: connection.defaults.reasoningEffort === 'off'
-              ? OFF_REASONING_EFFORT
-              : connection.defaults.reasoningEffort === 'low'
-                ? LOW_REASONING_EFFORT
-                : connection.defaults.reasoningEffort === 'max'
-                  ? MAX_REASONING_EFFORT
-                  : HIGH_REASONING_EFFORT,
+        : connection.defaults.thinking === 'disabled'
+          ? {
+            reasoning: {
+              efforts: OFF_ONLY_REASONING_EFFORTS,
+              defaultEffort: OFF_REASONING_EFFORT,
+            },
+          }
+          : {
+            reasoning: {
+              efforts: REASONING_EFFORTS,
+              defaultEffort: connection.defaults.reasoningEffort === 'off'
+                ? OFF_REASONING_EFFORT
+                : connection.defaults.reasoningEffort === 'low'
+                  ? LOW_REASONING_EFFORT
+                  : connection.defaults.reasoningEffort === 'max'
+                    ? MAX_REASONING_EFFORT
+                    : HIGH_REASONING_EFFORT,
+            },
           },
-        },
     }
   }
 
@@ -578,6 +582,7 @@ export class DeepSeekAdapter extends LlmAdapter {
         body = serializeRequest(requestOptions, connection.defaults)
       } else if (representation === 'base64') {
         body = await serializeRequestWithImages(requestOptions, {
+          dialect: connection.defaults.dialect,
           representation: { kind: 'base64' },
           requestImages,
           ...imageAccessOptions,
@@ -589,6 +594,7 @@ export class DeepSeekAdapter extends LlmAdapter {
       } else {
         try {
           body = await serializeRequestWithImages(requestOptions, {
+            dialect: connection.defaults.dialect,
             representation: {
               kind: 'file',
               resolveFileId: async (version, _block, location) => {
